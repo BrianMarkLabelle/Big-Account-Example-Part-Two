@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:secure-property-placeholder="http://www.mulesoft.org/schema/mule/secure-property-placeholder" xmlns:smtp="http://www.mulesoft.org/schema/mule/smtp" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw" xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:metadata="http://www.mulesoft.org/schema/mule/metadata" xmlns:batch="http://www.mulesoft.org/schema/mule/batch" xmlns:sfdc="http://www.mulesoft.org/schema/mule/sfdc" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/sfdc http://www.mulesoft.org/schema/mule/sfdc/current/mule-sfdc.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/smtp http://www.mulesoft.org/schema/mule/smtp/current/mule-smtp.xsd
+http://www.mulesoft.org/schema/mule/secure-property-placeholder http://www.mulesoft.org/schema/mule/secure-property-placeholder/current/mule-secure-property-placeholder.xsd">
+    <sfdc:config name="Salesforce__Basic_Authentication" username="${sdfc.user}" password="${sdfc.password}" securityToken="FHlhRCawKm3NVk0YDhQfDTNl" disableSessionInvalidation="true" doc:name="Salesforce: Basic Authentication"/>
+    <db:mysql-config name="MySQL_Configuration" host="${db.host}" port="${db.port}" user="${db.user}" password="${db.password}" database="${db.database}" doc:name="MySQL Configuration"/>
+    <secure-property-placeholder:config name="Secure_Property_Placeholder" key="JohnTavaresLeafs" location="sdfc-db-sync.properties" doc:name="Secure Property Placeholder"/>
+    <batch:job name="validatebatchprojectBatch">
+        <batch:input>
+            <poll doc:name="Poll">
+                <fixed-frequency-scheduler frequency="${poll.frequency-in-seconds}" timeUnit="SECONDS"/>
+                <watermark variable="lastModifiedDateWatermark" default-expression="#[server.dateTime.plusMonths(-1)]" selector="MAX" selector-expression="#[payload.LastModifiedDate]"/>
+                <sfdc:query config-ref="Salesforce__Basic_Authentication" query="dsql:SELECT BillingStreet, BillingCity, BillingState, BillingPostalCode, Id, Name, Phone, LastModifiedDate FROM account WHERE LastModifiedDate &gt; #[flowVars.lastModifiedDateWatermark]" doc:name="Salesforce"/>
+            </poll>
+        </batch:input>
+        <batch:process-records>
+            <batch:step name="Batch_Step1">
+                <enricher doc:name="Message Enricher" source="#[payload.size() &gt; 0]" target="#[recordVars.exists]">
+                    <db:select config-ref="MySQL_Configuration" doc:name="Database">
+                        <db:parameterized-query><![CDATA[SELECT ID FROM account WHERE trim(ID) = trim(#[payload.Id])]]></db:parameterized-query>
+                    </db:select>
+                </enricher>
+            </batch:step>
+            <batch:step name="Batch_Step">
+                <choice doc:name="Choice">
+                    <when expression="#[!recordVars.exists]">
+                        <db:insert config-ref="MySQL_Configuration" doc:name="Database">
+                            <db:parameterized-query><![CDATA[INSERT INTO account (id, name, cell, street, city, province, postal_code) VALUES (#[payload.Id], #[payload.Name], #[payload.Phone], #[payload.BillingStreet], #[payload.BillingCity], #[payload.BillingState], #[payload.BillingPostalCode])]]></db:parameterized-query>
+                        </db:insert>
+                        <logger message="#['Inserted a row:' + payload]" level="INFO" doc:name="Logger"/>
+                    </when>
+                    <otherwise>
+                        <db:update config-ref="MySQL_Configuration" doc:name="Database">
+                            <db:parameterized-query><![CDATA[UPDATE account SET Name = #[payload.Name], Cell = #[payload.Phone], Street = #[payload.BillingStreet], City = #[payload.BillingCity], Province = #[payload.BillingState], postal_code = #[payload.BillingPostalCode] WHERE trim(ID) = #[payload.Id]]]></db:parameterized-query>
+                        </db:update>
+                        <logger message="#['Updated a row:' + payload]" level="INFO" doc:name="Logger"/>
+                    </otherwise>
+                </choice>
+            </batch:step>
+        </batch:process-records>
+    </batch:job>
+    <catch-exception-strategy when="exception.causedBy[java.lang.Exception]" name="validatebatchprojectCatch_Exception_Strategy">
+        <logger message="#['An exception occurred running the batch process:' + exception]" level="INFO" doc:name="Logger"/>
+    </catch-exception-strategy>
+</mule>
